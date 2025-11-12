@@ -1,4 +1,7 @@
 <template>
+  <!-- 静默刷新保持组件：始终挂载以便尝试无感登录并定时续期 -->
+  <AdminKeepAlive />
+
   <div v-if="!isLoggedIn" class="login-container">
     <div class="login-card">
       <h2 class="login-title">后台管理登录</h2>
@@ -92,12 +95,14 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue';
-import { login } from '../api';
+import AdminKeepAlive from '../components/AdminKeepAlive.vue';
 import MenuManage from './admin/MenuManage.vue';
 import CardManage from './admin/CardManage.vue';
 import AdManage from './admin/AdManage.vue';
 import FriendLinkManage from './admin/FriendLinkManage.vue';
 import UserManage from './admin/UserManage.vue';
+
+import { login, apiSilentRefresh, setAccessToken, getAccessToken } from '../api';
 
 const page = ref('welcome');
 const lastLoginTime = ref('');
@@ -121,21 +126,48 @@ const pageTitle = computed(() => {
   }
 });
 
-onMounted(() => {
-  const token = localStorage.getItem('token');
-  isLoggedIn.value = !!token;
-  if (isLoggedIn.value) {
-    // 拉取用户信息
-    fetchLastLoginInfo();
+onMounted(async () => {
+  // 优先使用本地 access token
+  const token = getAccessToken();
+  if (token) {
+    isLoggedIn.value = true;
+    await fetchLastLoginInfo();
+    return;
+  }
+
+  // 若无 local access token，尝试静默刷新（无感登录）
+  try {
+    const res = await apiSilentRefresh();
+    if (res && res.accessToken) {
+      // apiSilentRefresh 已在 api.js 中设定 localStorage token，但这里确保状态一致
+      setAccessToken(res.accessToken);
+      isLoggedIn.value = true;
+      await fetchLastLoginInfo();
+    }
+  } catch (err) {
+    // 静默刷新失败，保持未登录状态（用户可手动登录）
+    console.debug('silent refresh not available or failed', err);
   }
 });
+
 async function fetchLastLoginInfo() {
   try {
-    const res = await fetch('/api/users/me', { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } });
+    const token = getAccessToken();
+    if (!token) return;
+    const res = await fetch('/api/users/me', {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
     if (res.ok) {
       const data = await res.json();
-      lastLoginTime.value = data.last_login_time || '';
-      lastLoginIp.value = data.last_login_ip || '';
+      lastLoginTime.value = data.last_login_time || data.lastLoginTime || '';
+      lastLoginIp.value = data.last_login_ip || data.lastLoginIp || '';
+    } else {
+      if (res.status === 401) {
+        // token 无效
+        handleLogoutLocal();
+      }
     }
   } catch (error) {
     console.error('获取用户信息失败:', error);
@@ -153,25 +185,47 @@ async function handleLogin() {
   
   try {
     const response = await login(username.value, password.value);
-    if (response.data.token) {
-      localStorage.setItem('token', response.data.token);
+    const data = response && response.data ? response.data : null;
+    const token = data && (data.accessToken || data.token);
+    if (token) {
+      setAccessToken(token);
       isLoggedIn.value = true;
-      lastLoginTime.value = response.data.lastLoginTime || '';
-      lastLoginIp.value = response.data.lastLoginIp || '';
+      username.value = '';
+      password.value = '';
+      await fetchLastLoginInfo();
+      page.value = 'welcome';
+    } else {
+      loginError.value = '登录失败：未收到 access token';
     }
   } catch (error) {
-    loginError.value = error.response?.data?.message || '登录失败，请检查用户名和密码';
+    loginError.value = error.response?.data?.error || error.response?.data?.message || error.message || '登录失败，请检查用户名和密码';
   } finally {
     loading.value = false;
   }
 }
 
-function logout() {
-  localStorage.removeItem('token');
+async function logout() {
+  try {
+    // 请求后端撤销 refresh token（服务端清 cookie）
+    await fetch('/api/logout', {
+      method: 'POST',
+      credentials: 'include'
+    });
+  } catch (e) {
+    // ignore
+  }
+  handleLogoutLocal();
+}
+
+function handleLogoutLocal() {
+  setAccessToken(null);
   isLoggedIn.value = false;
   username.value = '';
   password.value = '';
   loginError.value = '';
+  lastLoginIp.value = '';
+  lastLoginTime.value = '';
+  page.value = 'welcome';
 }
 
 function goHome() {
@@ -186,6 +240,7 @@ function closeSider() {
 </script>
 
 <style scoped>
+/* （保留原有样式） */
 .login-container {
   display: flex;
   justify-content: center;
@@ -615,4 +670,4 @@ function closeSider() {
 .menu-toggle {
   display: none;
 }
-</style> 
+</style>
