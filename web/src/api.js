@@ -1,12 +1,36 @@
 import axios from 'axios';
 const BASE = '/api';
 
-export const login = (username, password) => axios.post(`${BASE}/login`, { username, password });
+// token helper
+export function setAccessToken(token) {
+  if (token) localStorage.setItem('token', token);
+  else localStorage.removeItem('token');
+}
 
-function authHeaders() {
-  const token = localStorage.getItem('token');
+export function getAccessToken() {
+  return localStorage.getItem('token');
+}
+
+export function authHeaders() {
+  const token = getAccessToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
+
+// 静默刷新调用（供 AdminKeepAlive 或手动触发）
+export async function apiSilentRefresh() {
+  const res = await fetch(`${BASE}/refresh`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }
+  });
+  if (!res.ok) throw new Error('refresh failed');
+  const data = await res.json();
+  setAccessToken(data.accessToken);
+  return data;
+}
+
+// 登录
+export const login = (username, password) => axios.post(`${BASE}/login`, { username, password });
 
 // 菜单相关API
 export const getMenus = () => axios.get(`${BASE}/menus`);
@@ -50,4 +74,4 @@ export const deleteFriend = (id) => axios.delete(`${BASE}/friends/${id}`, { head
 // 用户API
 export const getUserProfile = () => axios.get(`${BASE}/users/profile`, { headers: authHeaders() });
 export const changePassword = (oldPassword, newPassword) => axios.put(`${BASE}/users/password`, { oldPassword, newPassword }, { headers: authHeaders() });
-export const getUsers = () => axios.get(`${BASE}/users`, { headers: authHeaders() }); 
+export const getUsers = () => axios.get(`${BASE}/users`, { headers: authHeaders() });
